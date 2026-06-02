@@ -10,9 +10,18 @@ import android.telephony.SmsManager;
 import android.telephony.SmsMessage;
 import android.util.Log;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
+
 public class SmsReceiver extends BroadcastReceiver {
     private static final String SMS_RECEIVED = "android.provider.Telephony.SMS_RECEIVED";
     private static final String TAG = "SMSReceiver";
+    private static final int MAX_HISTORY = 10;
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -25,17 +34,16 @@ public class SmsReceiver extends BroadcastReceiver {
         if (pdus == null || pdus.length == 0) return;
 
         SharedPreferences preferences = context.getSharedPreferences("SMSForwarder", Context.MODE_PRIVATE);
-        String sourceName = preferences.getString("sourceName", "");
+        String sourceName  = preferences.getString("sourceName", "");
         String targetNumber = preferences.getString("targetNumber", "");
         if (sourceName.isEmpty() || targetNumber.isEmpty()) return;
 
-        // Bug #7: Gộp tất cả PDU thành 1 message trước khi xử lý (tránh forward từng mảnh)
+        // Bug #7: Gộp tất cả PDU thành 1 message trước khi xử lý
         String format = bundle.getString("format");
         StringBuilder messageBuilder = new StringBuilder();
         String senderNumber = null;
 
         for (Object pdu : pdus) {
-            // Bug #5: Dùng createFromPdu có tham số format thay vì deprecated
             SmsMessage sms = createSmsFromPdu((byte[]) pdu, format);
             if (sms == null) continue;
             if (senderNumber == null) senderNumber = sms.getOriginatingAddress();
@@ -45,19 +53,19 @@ public class SmsReceiver extends BroadcastReceiver {
         if (senderNumber == null) return;
         String message = messageBuilder.toString();
 
-        // Bug #1: Dùng normalizing matching thay vì equals trực tiếp
         if (!matchesSender(senderNumber, sourceName)) return;
 
-        String result = message.replaceAll("SD:.*", "").trim();
-        String regexVND = "-\\d{1,3}(,\\d{3})*VND";
+        String result  = message.replaceAll("SD:.*", "").trim();
+        String vndRegex = "-\\d{1,3}(,\\d{3})*VND";
 
         if (!result.contains("TUYET DOI KHONG CUNG CAP MA XAC NHAN CHO BAT KY AI")
-                && !result.matches(".*" + regexVND + ".*")) {
+                && !result.matches(".*" + vndRegex + ".*")) {
             forwardSMS(context, targetNumber, result);
+            saveToHistory(context, preferences, senderNumber, result);
         }
     }
 
-    // Bug #5: Bao gồm tham số format để tránh deprecated + hỗ trợ CDMA
+    // Bug #5: Dùng tham số format để tránh deprecated + hỗ trợ CDMA
     private SmsMessage createSmsFromPdu(byte[] pdu, String format) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && format != null) {
             return SmsMessage.createFromPdu(pdu, format);
@@ -65,7 +73,7 @@ public class SmsReceiver extends BroadcastReceiver {
         return SmsMessage.createFromPdu(pdu);
     }
 
-    // Bug #1: So sánh có chuẩn hoá số điện thoại (+84 vs 0) và case-insensitive cho shortcode
+    // Bug #1: So sánh có chuẩn hoá (+84 vs 0) và case-insensitive cho shortcode
     private boolean matchesSender(String senderNumber, String source) {
         if (senderNumber == null || source.isEmpty()) return false;
         if (senderNumber.trim().equalsIgnoreCase(source.trim())) return true;
@@ -81,7 +89,7 @@ public class SmsReceiver extends BroadcastReceiver {
 
     private void forwardSMS(Context context, String targetNumber, String message) {
         try {
-            // Bug #5: Dùng context.getSystemService cho API 31+, tránh SmsManager.getDefault() deprecated
+            // Bug #5: Dùng context.getSystemService cho API 31+
             SmsManager smsManager;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 smsManager = context.getSystemService(SmsManager.class);
@@ -96,6 +104,44 @@ public class SmsReceiver extends BroadcastReceiver {
             Log.d(TAG, "SMS đã được chuyển tiếp thành công");
         } catch (Exception e) {
             Log.e(TAG, "Lỗi khi chuyển tiếp SMS: " + e.getMessage());
+        }
+    }
+
+    private void saveToHistory(Context context, SharedPreferences prefs, String sender, String message) {
+        try {
+            // Cập nhật bộ đếm hôm nay
+            String today = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date());
+            String savedDate = prefs.getString("forwardCountDate", "");
+            int count = today.equals(savedDate) ? prefs.getInt("forwardCountToday", 0) : 0;
+
+            // Thêm item mới vào đầu danh sách, giữ tối đa MAX_HISTORY items
+            JSONArray history;
+            try {
+                history = new JSONArray(prefs.getString("forwardHistory", "[]"));
+            } catch (JSONException e) {
+                history = new JSONArray();
+            }
+
+            JSONObject newItem = new JSONObject();
+            newItem.put("sender", sender);
+            newItem.put("time", System.currentTimeMillis());
+            // Chỉ lưu tối đa 120 ký tự để tiết kiệm bộ nhớ
+            newItem.put("message", message.length() > 120 ? message.substring(0, 120) + "…" : message);
+
+            JSONArray updated = new JSONArray();
+            updated.put(newItem);
+            for (int i = 0; i < Math.min(history.length(), MAX_HISTORY - 1); i++) {
+                updated.put(history.get(i));
+            }
+
+            prefs.edit()
+                    .putString("forwardHistory", updated.toString())
+                    .putString("forwardCountDate", today)
+                    .putInt("forwardCountToday", count + 1)
+                    .apply();
+
+        } catch (JSONException e) {
+            Log.e(TAG, "Lỗi khi lưu lịch sử: " + e.getMessage());
         }
     }
 }

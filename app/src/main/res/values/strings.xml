@@ -1,3 +1,26 @@
 <resources>
     <string name="app_name">Send Message Banking</string>
+
+    <!-- Status card -->
+    <string name="status_active">Đang hoạt động</string>
+    <string name="status_stopped">Đã dừng</string>
+    <string name="btn_stop_service">Dừng</string>
+    <string name="btn_start_service">Khởi động</string>
+    <string name="forwarded_today">Đã forward hôm nay: %d tin</string>
+
+    <!-- Config card -->
+    <string name="source_hint">Người gửi (VD: VCB, BIDV, 0901234567)</string>
+    <string name="target_hint">Số điện thoại đích</string>
+    <string name="btn_pick_contact">Chọn từ danh bạ</string>
+    <string name="btn_save">Lưu cài đặt</string>
+    <string name="save_success">Đã lưu cài đặt</string>
+    <string name="error_source_empty">Vui lòng nhập số/shortcode người gửi</string>
+    <string name="error_target_empty">Vui lòng nhập số điện thoại đích</string>
+    <string name="error_target_invalid">Số điện thoại không hợp lệ (9–15 chữ số)</string>
+    <string name="permission_required">Cần cấp đủ quyền để ứng dụng hoạt động</string>
+
+    <!-- History card -->
+    <string name="history_title">Lịch sử forward</string>
+    <string name="history_empty">Chưa có tin nhắn nào được forward</string>
+    <string name="btn_clear_history">Xoá</string>
 </resources>
