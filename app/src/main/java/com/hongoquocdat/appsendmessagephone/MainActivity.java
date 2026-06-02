@@ -5,24 +5,42 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.ContactsContract;
+import android.util.Log;
+import android.view.View;
 import android.widget.Button;
-import android.widget.EditText;
+import android.widget.ImageButton;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.activity.result.ActivityResultLauncher;
 import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.Toolbar;
 import androidx.core.content.ContextCompat;
+import androidx.recyclerview.widget.DividerItemDecoration;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+
+import com.google.android.material.textfield.TextInputEditText;
+import com.google.android.material.textfield.TextInputLayout;
+
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
 
 public class MainActivity extends AppCompatActivity {
-    private EditText sourceContactEdit;
-    private EditText targetNumberEdit;
-    private SharedPreferences preferences;
 
-    // Bug #4: Khai báo đầy đủ 4 permissions cần kiểm tra
+    private static final String TAG = "MainActivity";
     private static final String[] REQUIRED_PERMISSIONS = {
             Manifest.permission.RECEIVE_SMS,
             Manifest.permission.SEND_SMS,
@@ -30,46 +48,159 @@ public class MainActivity extends AppCompatActivity {
             Manifest.permission.READ_CONTACTS
     };
 
-    // Bug #2: Thay onActivityResult deprecated bằng ActivityResultLauncher
-    private final ActivityResultLauncher<String[]> permissionLauncher =
-            registerForActivityResult(new ActivityResultContracts.RequestMultiplePermissions(), result -> {
-                for (Boolean granted : result.values()) {
-                    if (!granted) {
-                        Toast.makeText(this, "Cần cấp đủ quyền để ứng dụng hoạt động", Toast.LENGTH_LONG).show();
-                        return;
-                    }
-                }
-            });
+    // Views — Status card
+    private View statusDot;
+    private TextView statusText;
+    private Button toggleServiceButton;
+    private TextView forwardCountText;
 
-    // Bug #2: Thay onActivityResult deprecated bằng ActivityResultLauncher
-    private final ActivityResultLauncher<Intent> contactPickerLauncher =
-            registerForActivityResult(new ActivityResultContracts.StartActivityForResult(), result -> {
-                if (result.getResultCode() == RESULT_OK && result.getData() != null) {
-                    resolveContact(result.getData().getData());
-                }
-            });
+    // Views — Config card
+    private TextInputLayout sourceInputLayout;
+    private TextInputLayout targetInputLayout;
+    private TextInputEditText sourceContactEdit;
+    private TextInputEditText targetNumberEdit;
+
+    // Views — History card
+    private TextView historyEmptyText;
+    private RecyclerView historyRecyclerView;
+    private HistoryAdapter historyAdapter;
+
+    private SharedPreferences preferences;
+
+    // ActivityResultLaunchers — phải register trong onCreate trước setContentView
+    private ActivityResultLauncher<String[]> permissionLauncher;
+    private ActivityResultLauncher<Intent> contactPickerLauncher;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+
+        // Đăng ký launchers trước khi inflate layout
+        permissionLauncher = registerForActivityResult(
+                new ActivityResultContracts.RequestMultiplePermissions(),
+                result -> {
+                    for (Boolean granted : result.values()) {
+                        if (!granted) {
+                            Toast.makeText(this, getString(R.string.permission_required), Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                    }
+                });
+
+        contactPickerLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    if (result.getResultCode() == RESULT_OK && result.getData() != null) {
+                        resolveContact(result.getData().getData());
+                    }
+                });
+
         setContentView(R.layout.activity_main);
-
-        sourceContactEdit = findViewById(R.id.sourceContactEdit);
-        targetNumberEdit = findViewById(R.id.targetNumberEdit);
-        Button selectContactButton = findViewById(R.id.selectContactButton);
-        Button saveButton = findViewById(R.id.saveButton);
-
         preferences = getSharedPreferences("SMSForwarder", MODE_PRIVATE);
-        sourceContactEdit.setText(preferences.getString("sourceName", ""));
-        targetNumberEdit.setText(preferences.getString("targetNumber", ""));
 
-        selectContactButton.setOnClickListener(v -> pickContact());
-        saveButton.setOnClickListener(v -> saveSettings());
-
+        setupToolbar();
+        bindViews();
+        setupRecyclerView();
+        loadSavedConfig();
+        setupListeners();
         checkPermissions();
     }
 
-    // Bug #4: Check từng permission riêng lẻ thay vì chỉ check READ_CONTACTS
+    @Override
+    protected void onResume() {
+        super.onResume();
+        updateStatusCard();
+        refreshHistory();
+    }
+
+    // ──────────────────────────────────────────────
+    // Setup helpers
+    // ──────────────────────────────────────────────
+
+    private void setupToolbar() {
+        Toolbar toolbar = findViewById(R.id.toolbar);
+        setSupportActionBar(toolbar);
+    }
+
+    private void bindViews() {
+        statusDot           = findViewById(R.id.statusDot);
+        statusText          = findViewById(R.id.statusText);
+        toggleServiceButton = findViewById(R.id.toggleServiceButton);
+        forwardCountText    = findViewById(R.id.forwardCountText);
+        sourceInputLayout   = findViewById(R.id.sourceInputLayout);
+        targetInputLayout   = findViewById(R.id.targetInputLayout);
+        sourceContactEdit   = findViewById(R.id.sourceContactEdit);
+        targetNumberEdit    = findViewById(R.id.targetNumberEdit);
+        historyEmptyText    = findViewById(R.id.historyEmptyText);
+        historyRecyclerView = findViewById(R.id.historyRecyclerView);
+    }
+
+    private void setupRecyclerView() {
+        historyAdapter = new HistoryAdapter();
+        historyRecyclerView.setLayoutManager(new LinearLayoutManager(this));
+        historyRecyclerView.setAdapter(historyAdapter);
+        historyRecyclerView.addItemDecoration(
+                new DividerItemDecoration(this, DividerItemDecoration.VERTICAL));
+    }
+
+    private void loadSavedConfig() {
+        sourceContactEdit.setText(preferences.getString("sourceName", ""));
+        targetNumberEdit.setText(preferences.getString("targetNumber", ""));
+    }
+
+    private void setupListeners() {
+        ImageButton selectContactButton = findViewById(R.id.selectContactButton);
+        Button saveButton               = findViewById(R.id.saveButton);
+        Button clearHistoryButton       = findViewById(R.id.clearHistoryButton);
+
+        selectContactButton.setOnClickListener(v -> pickContact());
+        saveButton.setOnClickListener(v -> saveSettings());
+        toggleServiceButton.setOnClickListener(v -> toggleService());
+        clearHistoryButton.setOnClickListener(v -> clearHistory());
+    }
+
+    // ──────────────────────────────────────────────
+    // Status card
+    // ──────────────────────────────────────────────
+
+    private void updateStatusCard() {
+        boolean running = preferences.getBoolean("serviceRunning", false);
+
+        // Màu chấm trạng thái
+        int color = ContextCompat.getColor(this,
+                running ? R.color.status_active : R.color.status_stopped);
+        GradientDrawable dot = new GradientDrawable();
+        dot.setShape(GradientDrawable.OVAL);
+        dot.setColor(color);
+        statusDot.setBackground(dot);
+
+        statusText.setText(running ? R.string.status_active : R.string.status_stopped);
+        statusText.setTextColor(color);
+        toggleServiceButton.setText(running ? R.string.btn_stop_service : R.string.btn_start_service);
+
+        // Đếm tin hôm nay (reset khi sang ngày mới)
+        String today = new SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(new Date());
+        String savedDate = preferences.getString("forwardCountDate", "");
+        int count = today.equals(savedDate) ? preferences.getInt("forwardCountToday", 0) : 0;
+        forwardCountText.setText(getString(R.string.forwarded_today, count));
+    }
+
+    private void toggleService() {
+        Intent serviceIntent = new Intent(this, SMSForwarderService.class);
+        boolean running = preferences.getBoolean("serviceRunning", false);
+        if (running) {
+            stopService(serviceIntent);
+        } else {
+            ContextCompat.startForegroundService(this, serviceIntent);
+        }
+        // Delay nhỏ để service cập nhật SharedPreferences trước khi đọc lại
+        historyRecyclerView.postDelayed(this::updateStatusCard, 300);
+    }
+
+    // ──────────────────────────────────────────────
+    // Config card
+    // ──────────────────────────────────────────────
+
     private void checkPermissions() {
         boolean anyMissing = false;
         for (String perm : REQUIRED_PERMISSIONS) {
@@ -78,9 +209,7 @@ public class MainActivity extends AppCompatActivity {
                 break;
             }
         }
-        if (anyMissing) {
-            permissionLauncher.launch(REQUIRED_PERMISSIONS);
-        }
+        if (anyMissing) permissionLauncher.launch(REQUIRED_PERMISSIONS);
     }
 
     private void pickContact() {
@@ -88,29 +217,26 @@ public class MainActivity extends AppCompatActivity {
         contactPickerLauncher.launch(intent);
     }
 
-    // Bug #1 + Bug #6: Lấy số điện thoại (không phải tên) + đóng cursor bằng try-with-resources
     private void resolveContact(Uri contactUri) {
         String[] projection = {ContactsContract.Contacts._ID, ContactsContract.Contacts.DISPLAY_NAME};
         try (Cursor cursor = getContentResolver().query(contactUri, projection, null, null, null)) {
             if (cursor == null || !cursor.moveToFirst()) return;
-            int idIdx = cursor.getColumnIndex(ContactsContract.Contacts._ID);
+            int idIdx   = cursor.getColumnIndex(ContactsContract.Contacts._ID);
             int nameIdx = cursor.getColumnIndex(ContactsContract.Contacts.DISPLAY_NAME);
             if (idIdx < 0 || nameIdx < 0) return;
 
-            String contactId = cursor.getString(idIdx);
+            String contactId  = cursor.getString(idIdx);
             String displayName = cursor.getString(nameIdx);
-
-            // Bug #1: Lấy số điện thoại thực để matching, không dùng tên hiển thị
-            String phoneNumber = getFirstPhoneNumber(contactId);
-            sourceContactEdit.setText(phoneNumber != null ? phoneNumber : displayName);
+            String phone      = getFirstPhoneNumber(contactId);
+            // Điền số điện thoại (dùng để matching), fallback sang tên nếu không có số
+            sourceContactEdit.setText(phone != null ? phone : displayName);
         }
     }
 
-    // Bug #6: Dùng try-with-resources để tránh cursor leak
     private String getFirstPhoneNumber(String contactId) {
         String[] projection = {ContactsContract.CommonDataKinds.Phone.NUMBER};
-        String selection = ContactsContract.CommonDataKinds.Phone.CONTACT_ID + " = ?";
-        try (Cursor cursor = getContentResolver().query(
+        String selection    = ContactsContract.CommonDataKinds.Phone.CONTACT_ID + " = ?";
+        try (Cursor cursor  = getContentResolver().query(
                 ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
                 projection, selection, new String[]{contactId}, null)) {
             if (cursor != null && cursor.moveToFirst()) {
@@ -122,20 +248,24 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void saveSettings() {
-        String sourceName = sourceContactEdit.getText().toString().trim();
-        String targetNumber = targetNumberEdit.getText().toString().trim();
+        String sourceName   = sourceContactEdit.getText() != null
+                ? sourceContactEdit.getText().toString().trim() : "";
+        String targetNumber = targetNumberEdit.getText() != null
+                ? targetNumberEdit.getText().toString().trim() : "";
 
-        // Bug #3: Validate input trước khi lưu
+        sourceInputLayout.setError(null);
+        targetInputLayout.setError(null);
+
         if (sourceName.isEmpty()) {
-            sourceContactEdit.setError("Vui lòng nhập số/shortcode người gửi");
+            sourceInputLayout.setError(getString(R.string.error_source_empty));
             return;
         }
         if (targetNumber.isEmpty()) {
-            targetNumberEdit.setError("Vui lòng nhập số điện thoại đích");
+            targetInputLayout.setError(getString(R.string.error_target_empty));
             return;
         }
         if (!targetNumber.matches("^[+]?[0-9]{9,15}$")) {
-            targetNumberEdit.setError("Số điện thoại không hợp lệ (9-15 chữ số)");
+            targetInputLayout.setError(getString(R.string.error_target_invalid));
             return;
         }
 
@@ -144,10 +274,50 @@ public class MainActivity extends AppCompatActivity {
                 .putString("targetNumber", targetNumber)
                 .apply();
 
-        // Bug #2: Start service ngay khi lưu, không chờ reboot
         Intent serviceIntent = new Intent(this, SMSForwarderService.class);
         ContextCompat.startForegroundService(this, serviceIntent);
 
-        Toast.makeText(this, "Đã lưu cài đặt", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, getString(R.string.save_success), Toast.LENGTH_SHORT).show();
+        historyRecyclerView.postDelayed(this::updateStatusCard, 300);
+    }
+
+    // ──────────────────────────────────────────────
+    // History card
+    // ──────────────────────────────────────────────
+
+    private void refreshHistory() {
+        List<HistoryAdapter.HistoryItem> items = loadHistory();
+        historyAdapter.updateItems(items);
+        boolean empty = items.isEmpty();
+        historyEmptyText.setVisibility(empty ? View.VISIBLE : View.GONE);
+        historyRecyclerView.setVisibility(empty ? View.GONE : View.VISIBLE);
+    }
+
+    private List<HistoryAdapter.HistoryItem> loadHistory() {
+        List<HistoryAdapter.HistoryItem> items = new ArrayList<>();
+        String json = preferences.getString("forwardHistory", "[]");
+        try {
+            JSONArray array = new JSONArray(json);
+            for (int i = 0; i < array.length(); i++) {
+                JSONObject obj = array.getJSONObject(i);
+                items.add(new HistoryAdapter.HistoryItem(
+                        obj.getString("sender"),
+                        obj.getLong("time"),
+                        obj.getString("message")));
+            }
+        } catch (JSONException e) {
+            Log.e(TAG, "Lỗi khi load lịch sử: " + e.getMessage());
+        }
+        return items;
+    }
+
+    private void clearHistory() {
+        preferences.edit()
+                .remove("forwardHistory")
+                .remove("forwardCountToday")
+                .remove("forwardCountDate")
+                .apply();
+        refreshHistory();
+        updateStatusCard();
     }
 }

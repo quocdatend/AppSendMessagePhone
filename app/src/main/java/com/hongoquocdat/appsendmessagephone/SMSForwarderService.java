@@ -15,14 +15,24 @@ public class SMSForwarderService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        // Đánh dấu service đang chạy để MainActivity hiển thị đúng trạng thái
+        getSharedPreferences("SMSForwarder", MODE_PRIVATE).edit()
+                .putBoolean("serviceRunning", true).apply();
         createNotificationChannel();
         startForeground(NOTIFICATION_ID, createNotification());
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        // Service sẽ tự động khởi động lại nếu bị kill
         return START_STICKY;
+    }
+
+    @Override
+    public void onDestroy() {
+        super.onDestroy();
+        // Xoá flag khi service bị dừng
+        getSharedPreferences("SMSForwarder", MODE_PRIVATE).edit()
+                .putBoolean("serviceRunning", false).apply();
     }
 
     @Override
@@ -49,7 +59,6 @@ public class SMSForwarderService extends Service {
         } else {
             builder = new Notification.Builder(this);
         }
-
         return builder
                 .setContentTitle("SMS Forwarder đang chạy")
                 .setContentText("Đang theo dõi tin nhắn SMS")
